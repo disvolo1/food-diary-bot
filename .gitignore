@@ -1,0 +1,10 @@
+.env
+food_diary.db
+*.db
+
+__pycache__/
+*.pyc
+
+.venv/
+venv/
+env/
