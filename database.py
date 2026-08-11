@@ -1,6 +1,7 @@
 import aiosqlite
 from datetime import datetime, date
 
+
 DB_NAME = "food_diary.db"
 
 
@@ -30,7 +31,8 @@ async def init_db():
                 amount REAL,
                 amount_unit TEXT,
                 created_at TEXT NOT NULL,
-                FOREIGN KEY (telegram_id) REFERENCES users (telegram_id)
+                FOREIGN KEY (telegram_id)
+                    REFERENCES users (telegram_id)
             )
         """)
 
@@ -38,7 +40,9 @@ async def init_db():
 
 
 async def get_user(telegram_id: int):
+
     async with aiosqlite.connect(DB_NAME) as db:
+
         db.row_factory = aiosqlite.Row
 
         cursor = await db.execute(
@@ -54,6 +58,7 @@ async def get_user(telegram_id: int):
 
 
 async def create_user(telegram_id: int):
+
     async with aiosqlite.connect(DB_NAME) as db:
 
         await db.execute(
@@ -80,6 +85,7 @@ async def update_user_goals(
     fat: float,
     carbs: float
 ):
+
     async with aiosqlite.connect(DB_NAME) as db:
 
         await db.execute(
@@ -114,6 +120,7 @@ async def add_meal(
     amount: float | None = None,
     amount_unit: str | None = None
 ):
+
     async with aiosqlite.connect(DB_NAME) as db:
 
         cursor = await db.execute(
@@ -150,6 +157,7 @@ async def add_meal(
 
 
 async def get_today_totals(telegram_id: int):
+
     today = date.today().isoformat()
 
     async with aiosqlite.connect(DB_NAME) as db:
@@ -182,9 +190,11 @@ async def get_today_totals(telegram_id: int):
 
 
 async def get_today_meals(telegram_id: int):
+
     today = date.today().isoformat()
 
     async with aiosqlite.connect(DB_NAME) as db:
+
         db.row_factory = aiosqlite.Row
 
         cursor = await db.execute(
@@ -205,6 +215,7 @@ async def get_today_meals(telegram_id: int):
 
 
 async def delete_last_meal(telegram_id: int):
+
     async with aiosqlite.connect(DB_NAME) as db:
 
         cursor = await db.execute(
