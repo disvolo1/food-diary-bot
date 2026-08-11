@@ -5,35 +5,39 @@ import os
 from dotenv import load_dotenv
 
 from aiogram import Bot, Dispatcher, F
+from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
 from aiogram.filters import CommandStart
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
-from aiogram.client.default import DefaultBotProperties
-from aiogram.types import Message, CallbackQuery
+from aiogram.types import CallbackQuery, Message
 
 from database import (
-    init_db,
-    get_user,
-    create_user,
-    update_user_goals,
     add_meal,
-    get_today_totals,
-    get_today_meals,
+    create_user,
     delete_last_meal,
+    get_today_meals,
+    get_today_totals,
+    get_user,
+    init_db,
+    update_user_goals,
 )
 
 from gemini import analyze_food_image
 
 from keyboards import (
-    main_menu,
-    confirm_meal,
     amount_type_keyboard,
-    settings_menu,
     cancel_keyboard,
+    confirm_meal,
+    main_menu,
+    settings_menu,
     today_keyboard,
 )
 
+
+# ============================================================
+# CONFIG
+# ============================================================
 
 load_dotenv()
 
@@ -43,7 +47,11 @@ if not BOT_TOKEN:
     raise RuntimeError("BOT_TOKEN is not set")
 
 
-logging.basicConfig(level=logging.INFO)
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s | %(levelname)s | %(message)s"
+)
+
 
 bot = Bot(
     token=BOT_TOKEN,
@@ -79,8 +87,18 @@ class SettingsStates(StatesGroup):
 
 
 # ============================================================
-# TEMPORARY MEAL DATA
+# TEMPORARY DATA
 # ============================================================
+
+# Здесь временно храним продукт между распознаванием
+# и подтверждением.
+#
+# Для MVP этого достаточно.
+#
+# telegram_id -> {
+#     "data": {...},
+#     "calculated": {...}
+# }
 
 pending_meals = {}
 
@@ -90,6 +108,16 @@ pending_meals = {}
 # ============================================================
 
 def format_number(value):
+    """
+    Красиво форматирует числа.
+
+    100.0 -> 100
+    100.5 -> 100.5
+    """
+
+    if value is None:
+        return "—"
+
     value = float(value)
 
     if value.is_integer():
@@ -98,18 +126,41 @@ def format_number(value):
     return f"{value:.1f}"
 
 
-def progress_bar(current, goal, length=10):
-    if goal <= 0:
+def progress_bar(
+    current,
+    goal,
+    length=10
+):
+    """
+    Простая текстовая полоска прогресса.
+    """
+
+    if not goal or goal <= 0:
         return "░" * length
 
-    percentage = min(current / goal, 1)
+    percentage = min(
+        max(current / goal, 0),
+        1
+    )
 
-    filled = round(percentage * length)
+    filled = round(
+        percentage * length
+    )
 
-    return "█" * filled + "░" * (length - filled)
+    return (
+        "█" * filled
+        + "░" * (length - filled)
+    )
 
 
-def build_today_text(user, totals):
+def build_today_text(
+    user,
+    totals
+):
+    """
+    Формирует экран статистики за сегодня.
+    """
+
     calories_goal = user["calories_goal"] or 0
     protein_goal = user["protein_goal"] or 0
     fat_goal = user["fat_goal"] or 0
@@ -120,10 +171,25 @@ def build_today_text(user, totals):
     fat = totals["fat"]
     carbs = totals["carbs"]
 
-    calories_left = max(calories_goal - calories, 0)
-    protein_left = max(protein_goal - protein, 0)
-    fat_left = max(fat_goal - fat, 0)
-    carbs_left = max(carbs_goal - carbs, 0)
+    calories_left = max(
+        calories_goal - calories,
+        0
+    )
+
+    protein_left = max(
+        protein_goal - protein,
+        0
+    )
+
+    fat_left = max(
+        fat_goal - fat,
+        0
+    )
+
+    carbs_left = max(
+        carbs_goal - carbs,
+        0
+    )
 
     return (
         "🍽 <b>Сегодня</b>\n\n"
@@ -155,13 +221,41 @@ def build_today_text(user, totals):
     )
 
 
-async def show_main_menu(message: Message):
+async def show_main_menu(
+    message: Message
+):
+    """
+    Показывает главное меню.
+    """
+
     await message.answer(
         "🍽 <b>Дневник питания</b>\n\n"
         "Отправь фотографию этикетки, "
-        "и я добавлю её в твой дневник.",
+        "и я распознаю КБЖУ.",
         reply_markup=main_menu()
     )
+
+
+async def edit_or_answer(
+    message: Message,
+    text: str,
+    reply_markup=None
+):
+    """
+    Пытаемся редактировать существующее сообщение.
+    Если это невозможно — отправляем новое.
+    """
+
+    try:
+        await message.edit_text(
+            text,
+            reply_markup=reply_markup
+        )
+    except Exception:
+        await message.answer(
+            text,
+            reply_markup=reply_markup
+        )
 
 
 # ============================================================
@@ -169,133 +263,225 @@ async def show_main_menu(message: Message):
 # ============================================================
 
 @dp.message(CommandStart())
-async def start_handler(message: Message, state: FSMContext):
+async def start_handler(
+    message: Message,
+    state: FSMContext
+):
 
     telegram_id = message.from_user.id
 
-    user = await get_user(telegram_id)
+    user = await get_user(
+        telegram_id
+    )
 
+    # Новый пользователь
     if not user:
-        await create_user(telegram_id)
 
-        await state.set_state(SetupStates.calories)
+        await create_user(
+            telegram_id
+        )
+
+        await state.set_state(
+            SetupStates.calories
+        )
 
         await message.answer(
             "👋 <b>Привет!</b>\n\n"
             "Давай настроим твой дневник питания.\n\n"
             "🔥 Сколько калорий тебе нужно в день?\n\n"
-            "<i>Напиши число, например 2200</i>",
+            "<i>Например: 2200</i>",
             reply_markup=cancel_keyboard()
         )
 
         return
 
+    # Если пользователь существует,
+    # но настройки ещё не заполнены.
     if not user["calories_goal"]:
-        await state.set_state(SetupStates.calories)
+
+        await state.set_state(
+            SetupStates.calories
+        )
 
         await message.answer(
-            "🔥 Сколько калорий тебе нужно в день?",
+            "🔥 <b>Сколько калорий тебе нужно в день?</b>\n\n"
+            "<i>Например: 2200</i>",
             reply_markup=cancel_keyboard()
         )
 
         return
 
-    await show_main_menu(message)
+    await state.clear()
+
+    await show_main_menu(
+        message
+    )
 
 
 # ============================================================
-# INITIAL SETUP
+# INITIAL SETUP — CALORIES
 # ============================================================
 
 @dp.message(SetupStates.calories)
-async def setup_calories(message: Message, state: FSMContext):
+async def setup_calories(
+    message: Message,
+    state: FSMContext
+):
 
     try:
-        calories = float(message.text.replace(",", "."))
+        calories = float(
+            message.text.replace(",", ".")
+        )
     except (ValueError, AttributeError):
+
         await message.answer(
             "❌ Введи число.\n\n"
             "Например: <b>2200</b>"
         )
+
         return
 
     if calories <= 0:
-        await message.answer("❌ Значение должно быть больше 0.")
+
+        await message.answer(
+            "❌ Значение должно быть больше нуля."
+        )
+
         return
 
-    await state.update_data(calories=calories)
-    await state.set_state(SetupStates.protein)
+    await state.update_data(
+        calories=calories
+    )
+
+    await state.set_state(
+        SetupStates.protein
+    )
 
     await message.answer(
         "🥩 <b>Сколько белка тебе нужно в день?</b>\n\n"
-        "Например: <b>150</b> г"
+        "<i>Например: 150 г</i>"
     )
 
 
+# ============================================================
+# INITIAL SETUP — PROTEIN
+# ============================================================
+
 @dp.message(SetupStates.protein)
-async def setup_protein(message: Message, state: FSMContext):
+async def setup_protein(
+    message: Message,
+    state: FSMContext
+):
 
     try:
-        protein = float(message.text.replace(",", "."))
+        protein = float(
+            message.text.replace(",", ".")
+        )
     except (ValueError, AttributeError):
+
         await message.answer(
             "❌ Введи число.\n\n"
             "Например: <b>150</b>"
         )
+
         return
 
     if protein <= 0:
-        await message.answer("❌ Значение должно быть больше 0.")
+
+        await message.answer(
+            "❌ Значение должно быть больше нуля."
+        )
+
         return
 
-    await state.update_data(protein=protein)
-    await state.set_state(SetupStates.fat)
+    await state.update_data(
+        protein=protein
+    )
+
+    await state.set_state(
+        SetupStates.fat
+    )
 
     await message.answer(
         "🥑 <b>Сколько жиров тебе нужно в день?</b>\n\n"
-        "Например: <b>70</b> г"
+        "<i>Например: 70 г</i>"
     )
 
 
+# ============================================================
+# INITIAL SETUP — FAT
+# ============================================================
+
 @dp.message(SetupStates.fat)
-async def setup_fat(message: Message, state: FSMContext):
+async def setup_fat(
+    message: Message,
+    state: FSMContext
+):
 
     try:
-        fat = float(message.text.replace(",", "."))
+        fat = float(
+            message.text.replace(",", ".")
+        )
     except (ValueError, AttributeError):
+
         await message.answer(
             "❌ Введи число.\n\n"
             "Например: <b>70</b>"
         )
+
         return
 
     if fat <= 0:
-        await message.answer("❌ Значение должно быть больше 0.")
+
+        await message.answer(
+            "❌ Значение должно быть больше нуля."
+        )
+
         return
 
-    await state.update_data(fat=fat)
-    await state.set_state(SetupStates.carbs)
+    await state.update_data(
+        fat=fat
+    )
+
+    await state.set_state(
+        SetupStates.carbs
+    )
 
     await message.answer(
         "🍞 <b>Сколько углеводов тебе нужно в день?</b>\n\n"
-        "Например: <b>250</b> г"
+        "<i>Например: 250 г</i>"
     )
 
 
+# ============================================================
+# INITIAL SETUP — CARBS
+# ============================================================
+
 @dp.message(SetupStates.carbs)
-async def setup_carbs(message: Message, state: FSMContext):
+async def setup_carbs(
+    message: Message,
+    state: FSMContext
+):
 
     try:
-        carbs = float(message.text.replace(",", "."))
+        carbs = float(
+            message.text.replace(",", ".")
+        )
     except (ValueError, AttributeError):
+
         await message.answer(
             "❌ Введи число.\n\n"
             "Например: <b>250</b>"
         )
+
         return
 
     if carbs <= 0:
-        await message.answer("❌ Значение должно быть больше 0.")
+
+        await message.answer(
+            "❌ Значение должно быть больше нуля."
+        )
+
         return
 
     data = await state.get_data()
@@ -312,10 +498,12 @@ async def setup_carbs(message: Message, state: FSMContext):
 
     await message.answer(
         "✅ <b>Готово!</b>\n\n"
+
         f"🔥 {format_number(data['calories'])} ккал\n"
         f"🥩 {format_number(data['protein'])} г белка\n"
         f"🥑 {format_number(data['fat'])} г жиров\n"
         f"🍞 {format_number(carbs)} г углеводов\n\n"
+
         "Теперь просто отправляй мне "
         "фотографии этикеток 📷",
         reply_markup=main_menu()
@@ -323,10 +511,12 @@ async def setup_carbs(message: Message, state: FSMContext):
 
 
 # ============================================================
-# ADD FOOD
+# ADD FOOD BUTTON
 # ============================================================
 
-@dp.callback_query(F.data == "add_food")
+@dp.callback_query(
+    F.data == "add_food"
+)
 async def add_food_callback(
     callback: CallbackQuery,
     state: FSMContext
@@ -334,15 +524,25 @@ async def add_food_callback(
 
     await callback.answer()
 
-    await state.set_state(MealStates.waiting_photo)
+    await state.set_state(
+        MealStates.waiting_photo
+    )
 
     await callback.message.edit_text(
         "📷 <b>Отправь фотографию этикетки</b>\n\n"
-        "Я прочитаю калории, белки, жиры и углеводы."
+        "Я прочитаю калории, белки, жиры и углеводы.",
+        reply_markup=cancel_keyboard()
     )
 
 
-@dp.message(MealStates.waiting_photo, F.photo)
+# ============================================================
+# PHOTO PROCESSING
+# ============================================================
+
+@dp.message(
+    MealStates.waiting_photo,
+    F.photo
+)
 async def receive_food_photo(
     message: Message,
     state: FSMContext
@@ -353,58 +553,116 @@ async def receive_food_photo(
     )
 
     try:
+
         photo = message.photo[-1]
 
-        file = await bot.get_file(photo.file_id)
-
-        image_bytes = await bot.download_file(
-            file.file_path
+        telegram_file = await bot.get_file(
+            photo.file_id
         )
 
-        image_data = image_bytes.read()
-
-        result = await analyze_food_image(image_data)
-
-    except Exception as e:
-
-        logging.exception(e)
-
-        await processing_message.edit_text(
-            "❌ Не получилось прочитать этикетку.\n\n"
-            "Попробуй сфотографировать её ближе и "
-            "при хорошем освещении."
+        downloaded_file = await bot.download_file(
+            telegram_file.file_path
         )
+
+        image_data = downloaded_file.read()
+
+        result = await analyze_food_image(
+            image_data,
+            mime_type="image/jpeg"
+        )
+
+    except Exception as error:
+
+        logging.exception(
+            "Gemini processing error: %s",
+            error
+        )
+
+        try:
+            await processing_message.edit_text(
+                "❌ <b>Не получилось прочитать этикетку.</b>\n\n"
+                "Попробуй сфотографировать таблицу КБЖУ "
+                "ближе и при хорошем освещении.",
+                reply_markup=main_menu()
+            )
+        except Exception:
+            pass
+
+        await state.clear()
 
         return
 
-    await processing_message.delete()
+    try:
+        await processing_message.delete()
+    except Exception:
+        pass
 
     telegram_id = message.from_user.id
 
-    pending_meals[telegram_id] = {
-        "data": result
-    }
+    # Проверяем полученные значения
+    name = result.get(
+        "name"
+    ) or "Неизвестный продукт"
 
-    calories = result.get("calories")
-    protein = result.get("protein")
-    fat = result.get("fat")
-    carbs = result.get("carbs")
-    basis = result.get("basis")
+    calories = result.get(
+        "calories"
+    )
+
+    protein = result.get(
+        "protein"
+    )
+
+    fat = result.get(
+        "fat"
+    )
+
+    carbs = result.get(
+        "carbs"
+    )
+
+    basis = result.get(
+        "basis"
+    )
 
     if any(
         value is None
-        for value in [calories, protein, fat, carbs]
+        for value in [
+            calories,
+            protein,
+            fat,
+            carbs
+        ]
     ):
+
         await message.answer(
-            "⚠️ <b>Не удалось полностью прочитать этикетку.</b>\n\n"
-            "Попробуй отправить фотографию, где таблица "
-            "КБЖУ хорошо видна."
+            "⚠️ <b>Не удалось полностью прочитать КБЖУ.</b>\n\n"
+            "Сфотографируй таблицу пищевой ценности "
+            "крупнее и целиком.",
+            reply_markup=main_menu()
         )
+
+        await state.clear()
 
         return
 
+    # Сохраняем распознанные данные
+    pending_meals[telegram_id] = {
+        "data": {
+            "name": name,
+            "calories": float(calories),
+            "protein": float(protein),
+            "fat": float(fat),
+            "carbs": float(carbs),
+            "basis": basis
+        }
+    }
+
+    # --------------------------------------------------------
+    # Формируем экран распознанного продукта
+    # --------------------------------------------------------
+
     text = (
-        f"📦 <b>{result.get('name', 'Продукт')}</b>\n\n"
+        f"📦 <b>{name}</b>\n\n"
 
         f"🔥 {format_number(calories)} ккал\n"
         f"🥩 {format_number(protein)} г белка\n"
@@ -413,52 +671,52 @@ async def receive_food_photo(
     )
 
     if basis == "100g":
-        text += "📏 Значения указаны на <b>100 г</b>.\n\n"
-        text += "Сколько ты съел?"
 
-        await state.set_state(MealStates.waiting_amount)
-
-        await message.answer(
-            text,
-            reply_markup=amount_type_keyboard()
+        text += (
+            "📏 Значения указаны на <b>100 г</b>.\n\n"
+            "Сколько ты съел?"
         )
 
     elif basis == "100ml":
-        text += "📏 Значения указаны на <b>100 мл</b>.\n\n"
-        text += "Напиши, сколько мл ты выпил."
 
-        await state.set_state(MealStates.waiting_amount)
-
-        await message.answer(
-            text,
-            reply_markup=amount_type_keyboard()
+        text += (
+            "📏 Значения указаны на <b>100 мл</b>.\n\n"
+            "Сколько мл ты выпил?"
         )
 
     elif basis == "portion":
-        text += "📏 Значения указаны за <b>порцию</b>.\n\n"
-        text += "Сколько порций ты съел?"
 
-        await state.set_state(MealStates.waiting_amount)
+        text += (
+            "📏 Значения указаны за <b>порцию</b>.\n\n"
+            "Сколько порций ты съел?"
+        )
 
-        await message.answer(
-            text,
-            reply_markup=amount_type_keyboard()
+    elif basis == "package":
+
+        text += (
+            "📦 Значения указаны за <b>упаковку</b>.\n\n"
+            "Сколько упаковок ты съел?"
         )
 
     else:
-        text += "📦 Значения указаны за упаковку.\n\n"
-        text += "Сколько упаковок ты съел?"
 
-        await state.set_state(MealStates.waiting_amount)
-
-        await message.answer(
-            text,
-            reply_markup=amount_type_keyboard()
+        text += (
+            "📏 Не удалось определить основу.\n\n"
+            "Выбери способ ввода:"
         )
+
+    await state.set_state(
+        MealStates.waiting_amount
+    )
+
+    await message.answer(
+        text,
+        reply_markup=amount_type_keyboard()
+    )
 
 
 # ============================================================
-# AMOUNT
+# AMOUNT — GRAMS
 # ============================================================
 
 @dp.callback_query(
@@ -472,13 +730,21 @@ async def amount_grams(
 
     await callback.answer()
 
-    await state.update_data(amount_type="grams")
+    await state.update_data(
+        amount_type="grams"
+    )
 
     await callback.message.edit_text(
         "⚖️ <b>Сколько грамм?</b>\n\n"
-        "Напиши число, например: <b>250</b>"
+        "Напиши число.\n"
+        "Например: <b>250</b>",
+        reply_markup=cancel_keyboard()
     )
 
+
+# ============================================================
+# AMOUNT — PORTION
+# ============================================================
 
 @dp.callback_query(
     MealStates.waiting_amount,
@@ -491,49 +757,73 @@ async def amount_portion(
 
     await callback.answer()
 
-    await state.update_data(amount_type="portion")
+    await state.update_data(
+        amount_type="portion"
+    )
 
     await callback.message.edit_text(
         "🥣 <b>Сколько порций?</b>\n\n"
-        "Напиши число, например: <b>2</b>"
+        "Напиши число.\n"
+        "Например: <b>2</b>",
+        reply_markup=cancel_keyboard()
     )
 
 
-@dp.message(MealStates.waiting_amount)
+# ============================================================
+# RECEIVE AMOUNT
+# ============================================================
+
+@dp.message(
+    MealStates.waiting_amount
+)
 async def receive_amount(
     message: Message,
     state: FSMContext
 ):
 
     try:
-        amount = float(message.text.replace(",", "."))
-    except (ValueError, AttributeError):
+
+        amount = float(
+            message.text.replace(",", ".")
+        )
+
+    except (
+        ValueError,
+        AttributeError
+    ):
+
         await message.answer(
             "❌ Введи число.\n\n"
             "Например: <b>150</b>"
         )
+
         return
 
     if amount <= 0:
+
         await message.answer(
-            "❌ Значение должно быть больше 0."
+            "❌ Значение должно быть больше нуля."
         )
+
         return
 
     telegram_id = message.from_user.id
 
     if telegram_id not in pending_meals:
+
         await state.clear()
 
         await message.answer(
-            "Сессия добавления еды закончилась.\n"
-            "Нажми 📷 Добавить еду ещё раз.",
+            "❌ Сессия добавления еды закончилась.\n\n"
+            "Нажми 📷 <b>Добавить еду</b>.",
             reply_markup=main_menu()
         )
 
         return
 
-    meal = pending_meals[telegram_id]["data"]
+    meal = pending_meals[
+        telegram_id
+    ]["data"]
 
     state_data = await state.get_data()
 
@@ -542,44 +832,87 @@ async def receive_amount(
         "grams"
     )
 
-    basis = meal.get("basis")
+    basis = meal.get(
+        "basis"
+    )
 
-    multiplier = 1
+    # --------------------------------------------------------
+    # Расчёт
+    # --------------------------------------------------------
 
-    if basis == "100g" or basis == "100ml":
+    if basis in (
+        "100g",
+        "100ml"
+    ):
 
         multiplier = amount / 100
 
-    elif basis in ("portion", "package"):
+    elif basis in (
+        "portion",
+        "package"
+    ):
 
         multiplier = amount
 
-    calories = meal["calories"] * multiplier
-    protein = meal["protein"] * multiplier
-    fat = meal["fat"] * multiplier
-    carbs = meal["carbs"] * multiplier
+    else:
 
-    pending_meals[telegram_id]["calculated"] = {
+        multiplier = amount / 100
+
+    calculated_calories = (
+        meal["calories"]
+        * multiplier
+    )
+
+    calculated_protein = (
+        meal["protein"]
+        * multiplier
+    )
+
+    calculated_fat = (
+        meal["fat"]
+        * multiplier
+    )
+
+    calculated_carbs = (
+        meal["carbs"]
+        * multiplier
+    )
+
+    pending_meals[
+        telegram_id
+    ]["calculated"] = {
+
         "name": meal["name"],
-        "calories": calories,
-        "protein": protein,
-        "fat": fat,
-        "carbs": carbs,
+
+        "calories": calculated_calories,
+
+        "protein": calculated_protein,
+
+        "fat": calculated_fat,
+
+        "carbs": calculated_carbs,
+
         "amount": amount,
+
         "amount_type": amount_type
     }
+
+    unit = (
+        "г"
+        if amount_type == "grams"
+        else "порций"
+    )
 
     text = (
         "🍽 <b>Проверь приём пищи</b>\n\n"
 
         f"📦 {meal['name']}\n"
-        f"⚖️ {format_number(amount)} "
-        f"{'г' if amount_type == 'grams' else 'порций'}\n\n"
+        f"⚖️ {format_number(amount)} {unit}\n\n"
 
-        f"🔥 {format_number(calories)} ккал\n"
-        f"🥩 {format_number(protein)} г белка\n"
-        f"🥑 {format_number(fat)} г жиров\n"
-        f"🍞 {format_number(carbs)} г углеводов"
+        f"🔥 {format_number(calculated_calories)} ккал\n"
+        f"🥩 {format_number(calculated_protein)} г белка\n"
+        f"🥑 {format_number(calculated_fat)} г жиров\n"
+        f"🍞 {format_number(calculated_carbs)} г углеводов"
     )
 
     await message.answer(
@@ -592,7 +925,9 @@ async def receive_amount(
 # CONFIRM MEAL
 # ============================================================
 
-@dp.callback_query(F.data == "meal_confirm")
+@dp.callback_query(
+    F.data == "meal_confirm"
+)
 async def meal_confirm(
     callback: CallbackQuery,
     state: FSMContext
@@ -603,6 +938,7 @@ async def meal_confirm(
     telegram_id = callback.from_user.id
 
     if telegram_id not in pending_meals:
+
         await callback.message.edit_text(
             "❌ Приём пищи больше недоступен.",
             reply_markup=main_menu()
@@ -610,44 +946,76 @@ async def meal_confirm(
 
         return
 
-    meal = pending_meals[telegram_id]["calculated"]
+    meal = pending_meals[
+        telegram_id
+    ].get(
+        "calculated"
+    )
+
+    if not meal:
+
+        await callback.message.edit_text(
+            "❌ Не удалось сохранить приём пищи.",
+            reply_markup=main_menu()
+        )
+
+        return
 
     await add_meal(
+
         telegram_id=telegram_id,
+
         name=meal["name"],
+
         calories=meal["calories"],
+
         protein=meal["protein"],
+
         fat=meal["fat"],
+
         carbs=meal["carbs"],
+
         amount=meal["amount"],
+
         amount_unit=meal["amount_type"]
     )
 
-    del pending_meals[telegram_id]
+    pending_meals.pop(
+        telegram_id,
+        None
+    )
 
     await state.clear()
 
-    user = await get_user(telegram_id)
+    user = await get_user(
+        telegram_id
+    )
 
-    totals = await get_today_totals(telegram_id)
+    totals = await get_today_totals(
+        telegram_id
+    )
 
     calories_left = max(
-        user["calories_goal"] - totals["calories"],
+        user["calories_goal"]
+        - totals["calories"],
         0
     )
 
     protein_left = max(
-        user["protein_goal"] - totals["protein"],
+        user["protein_goal"]
+        - totals["protein"],
         0
     )
 
     fat_left = max(
-        user["fat_goal"] - totals["fat"],
+        user["fat_goal"]
+        - totals["fat"],
         0
     )
 
     carbs_left = max(
-        user["carbs_goal"] - totals["carbs"],
+        user["carbs_goal"]
+        - totals["carbs"],
         0
     )
 
@@ -671,7 +1039,13 @@ async def meal_confirm(
     )
 
 
-@dp.callback_query(F.data == "meal_cancel")
+# ============================================================
+# CANCEL MEAL
+# ============================================================
+
+@dp.callback_query(
+    F.data == "meal_cancel"
+)
 async def meal_cancel(
     callback: CallbackQuery,
     state: FSMContext
@@ -689,7 +1063,7 @@ async def meal_cancel(
     await state.clear()
 
     await callback.message.edit_text(
-        "❌ Добавление отменено.",
+        "❌ <b>Добавление отменено.</b>",
         reply_markup=main_menu()
     )
 
@@ -698,7 +1072,9 @@ async def meal_cancel(
 # TODAY
 # ============================================================
 
-@dp.callback_query(F.data == "today")
+@dp.callback_query(
+    F.data == "today"
+)
 async def today_callback(
     callback: CallbackQuery
 ):
@@ -707,12 +1083,16 @@ async def today_callback(
 
     telegram_id = callback.from_user.id
 
-    user = await get_user(telegram_id)
+    user = await get_user(
+        telegram_id
+    )
 
     if not user:
+
         await callback.message.edit_text(
             "Сначала нажми /start"
         )
+
         return
 
     totals = await get_today_totals(
@@ -742,7 +1122,8 @@ async def today_callback(
     else:
 
         text += (
-            "\n\n<i>Сегодня пока ничего "
+            "\n\n"
+            "<i>Сегодня пока ничего "
             "не добавлено.</i>"
         )
 
@@ -756,7 +1137,9 @@ async def today_callback(
 # DELETE LAST MEAL
 # ============================================================
 
-@dp.callback_query(F.data == "delete_last")
+@dp.callback_query(
+    F.data == "delete_last"
+)
 async def delete_last_callback(
     callback: CallbackQuery
 ):
@@ -771,16 +1154,29 @@ async def delete_last_callback(
 
     if deleted:
 
+        user = await get_user(
+            telegram_id
+        )
+
+        totals = await get_today_totals(
+            telegram_id
+        )
+
+        text = build_today_text(
+            user,
+            totals
+        )
+
         await callback.message.edit_text(
-            "🗑 <b>Последний приём пищи удалён.</b>",
-            reply_markup=main_menu()
+            text,
+            reply_markup=today_keyboard()
         )
 
     else:
 
         await callback.message.edit_text(
             "Сегодня ещё нет приёмов пищи.",
-            reply_markup=main_menu()
+            reply_markup=today_keyboard()
         )
 
 
@@ -788,7 +1184,9 @@ async def delete_last_callback(
 # SETTINGS
 # ============================================================
 
-@dp.callback_query(F.data == "settings")
+@dp.callback_query(
+    F.data == "settings"
+)
 async def settings_callback(
     callback: CallbackQuery
 ):
@@ -797,15 +1195,33 @@ async def settings_callback(
 
     telegram_id = callback.from_user.id
 
-    user = await get_user(telegram_id)
+    user = await get_user(
+        telegram_id
+    )
+
+    if not user:
+
+        await callback.message.edit_text(
+            "Сначала нажми /start",
+            reply_markup=main_menu()
+        )
+
+        return
 
     text = (
         "⚙️ <b>Настройки</b>\n\n"
 
-        f"🔥 Калории: {format_number(user['calories_goal'])}\n"
-        f"🥩 Белок: {format_number(user['protein_goal'])} г\n"
-        f"🥑 Жиры: {format_number(user['fat_goal'])} г\n"
-        f"🍞 Углеводы: {format_number(user['carbs_goal'])} г"
+        f"🔥 Калории: "
+        f"{format_number(user['calories_goal'])}\n"
+
+        f"🥩 Белок: "
+        f"{format_number(user['protein_goal'])} г\n"
+
+        f"🥑 Жиры: "
+        f"{format_number(user['fat_goal'])} г\n"
+
+        f"🍞 Углеводы: "
+        f"{format_number(user['carbs_goal'])} г"
     )
 
     await callback.message.edit_text(
@@ -815,7 +1231,7 @@ async def settings_callback(
 
 
 # ============================================================
-# CHANGE SETTINGS
+# START SETTING
 # ============================================================
 
 async def start_setting(
@@ -827,8 +1243,13 @@ async def start_setting(
 
     await callback.answer()
 
+    state_class = getattr(
+        SettingsStates,
+        setting_name
+    )
+
     await state.set_state(
-        getattr(SettingsStates, setting_name)
+        state_class
     )
 
     await callback.message.edit_text(
@@ -837,7 +1258,9 @@ async def start_setting(
     )
 
 
-@dp.callback_query(F.data == "set_calories")
+@dp.callback_query(
+    F.data == "set_calories"
+)
 async def set_calories_callback(
     callback: CallbackQuery,
     state: FSMContext
@@ -851,7 +1274,9 @@ async def set_calories_callback(
     )
 
 
-@dp.callback_query(F.data == "set_protein")
+@dp.callback_query(
+    F.data == "set_protein"
+)
 async def set_protein_callback(
     callback: CallbackQuery,
     state: FSMContext
@@ -865,7 +1290,9 @@ async def set_protein_callback(
     )
 
 
-@dp.callback_query(F.data == "set_fat")
+@dp.callback_query(
+    F.data == "set_fat"
+)
 async def set_fat_callback(
     callback: CallbackQuery,
     state: FSMContext
@@ -879,7 +1306,9 @@ async def set_fat_callback(
     )
 
 
-@dp.callback_query(F.data == "set_carbs")
+@dp.callback_query(
+    F.data == "set_carbs"
+)
 async def set_carbs_callback(
     callback: CallbackQuery,
     state: FSMContext
@@ -894,7 +1323,7 @@ async def set_carbs_callback(
 
 
 # ============================================================
-# SETTINGS INPUTS
+# UPDATE SINGLE GOAL
 # ============================================================
 
 async def update_single_goal(
@@ -904,10 +1333,15 @@ async def update_single_goal(
 ):
 
     try:
+
         value = float(
             message.text.replace(",", ".")
         )
-    except (ValueError, AttributeError):
+
+    except (
+        ValueError,
+        AttributeError
+    ):
 
         await message.answer(
             "❌ Введи число."
@@ -918,7 +1352,7 @@ async def update_single_goal(
     if value <= 0:
 
         await message.answer(
-            "❌ Значение должно быть больше 0."
+            "❌ Значение должно быть больше нуля."
         )
 
         return
@@ -927,20 +1361,43 @@ async def update_single_goal(
         message.from_user.id
     )
 
+    if not user:
+
+        await state.clear()
+
+        await message.answer(
+            "Сначала нажми /start"
+        )
+
+        return
+
     goals = {
-        "calories": user["calories_goal"],
-        "protein": user["protein_goal"],
-        "fat": user["fat_goal"],
-        "carbs": user["carbs_goal"]
+
+        "calories":
+            user["calories_goal"],
+
+        "protein":
+            user["protein_goal"],
+
+        "fat":
+            user["fat_goal"],
+
+        "carbs":
+            user["carbs_goal"]
     }
 
     goals[field] = value
 
     await update_user_goals(
+
         telegram_id=message.from_user.id,
+
         calories=goals["calories"],
+
         protein=goals["protein"],
+
         fat=goals["fat"],
+
         carbs=goals["carbs"]
     )
 
@@ -952,7 +1409,9 @@ async def update_single_goal(
     )
 
 
-@dp.message(SettingsStates.calories)
+@dp.message(
+    SettingsStates.calories
+)
 async def settings_calories(
     message: Message,
     state: FSMContext
@@ -965,7 +1424,9 @@ async def settings_calories(
     )
 
 
-@dp.message(SettingsStates.protein)
+@dp.message(
+    SettingsStates.protein
+)
 async def settings_protein(
     message: Message,
     state: FSMContext
@@ -978,7 +1439,9 @@ async def settings_protein(
     )
 
 
-@dp.message(SettingsStates.fat)
+@dp.message(
+    SettingsStates.fat
+)
 async def settings_fat(
     message: Message,
     state: FSMContext
@@ -991,7 +1454,9 @@ async def settings_fat(
     )
 
 
-@dp.message(SettingsStates.carbs)
+@dp.message(
+    SettingsStates.carbs
+)
 async def settings_carbs(
     message: Message,
     state: FSMContext
@@ -1005,10 +1470,12 @@ async def settings_carbs(
 
 
 # ============================================================
-# BACK TO MAIN MENU
+# BACK TO MAIN
 # ============================================================
 
-@dp.callback_query(F.data == "back_main")
+@dp.callback_query(
+    F.data == "back_main"
+)
 async def back_main(
     callback: CallbackQuery,
     state: FSMContext
@@ -1025,7 +1492,13 @@ async def back_main(
     )
 
 
-@dp.callback_query(F.data == "cancel_action")
+# ============================================================
+# CANCEL ACTION
+# ============================================================
+
+@dp.callback_query(
+    F.data == "cancel_action"
+)
 async def cancel_action(
     callback: CallbackQuery,
     state: FSMContext
@@ -1043,21 +1516,52 @@ async def cancel_action(
     await state.clear()
 
     await callback.message.edit_text(
-        "❌ Действие отменено.",
+        "❌ <b>Действие отменено.</b>",
         reply_markup=main_menu()
     )
 
 
 # ============================================================
-# TEXT WITHOUT ACTIVE STATE
+# PHOTO WITHOUT ACTIVE STATE
+# ============================================================
+
+@dp.message(F.photo)
+async def photo_without_state(
+    message: Message,
+    state: FSMContext
+):
+
+    """
+    Если пользователь просто отправил фотографию
+    этикетки без нажатия кнопки — тоже начинаем
+    распознавание.
+
+    Это делает взаимодействие более естественным.
+    """
+
+    await state.set_state(
+        MealStates.waiting_photo
+    )
+
+    # Передаём обработку в основной обработчик.
+    await receive_food_photo(
+        message,
+        state
+    )
+
+
+# ============================================================
+# UNKNOWN TEXT
 # ============================================================
 
 @dp.message(F.text)
-async def unknown_text(message: Message):
+async def unknown_text(
+    message: Message
+):
 
     await message.answer(
-        "Я жду фотографию этикетки 📷\n\n"
-        "Или используй меню ниже.",
+        "📷 Отправь фотографию этикетки,\n"
+        "или используй меню ниже.",
         reply_markup=main_menu()
     )
 
@@ -1071,11 +1575,16 @@ async def main():
     await init_db()
 
     logging.info(
-        "Food Diary Bot started"
+        "🍽 Food Diary Bot started"
     )
 
-    await dp.start_polling(bot)
+    await dp.start_polling(
+        bot
+    )
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+
+    asyncio.run(
+        main()
+    )
