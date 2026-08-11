@@ -14,44 +14,40 @@ if not GEMINI_API_KEY:
 
 client = genai.Client(api_key=GEMINI_API_KEY)
 
-
 MODEL_NAME = "gemini-2.5-flash-lite"
 
 
 PROMPT = """
-Ты помощник для приложения дневника питания.
+Ты помощник для дневника питания.
 
 На изображении находится этикетка продукта питания.
 
-Твоя задача — внимательно прочитать этикетку и определить пищевую ценность.
+Тебе нужно внимательно прочитать таблицу пищевой ценности и вернуть данные
+для дальнейшего автоматического расчёта.
 
-Нужно найти:
+Найди:
 
-1. Название продукта
-2. Калории
-3. Белки
-4. Жиры
-5. Углеводы
-6. На какое количество указаны значения:
-   - на 100 г
-   - на 100 мл
-   - на порцию
-   - на упаковку
+- название продукта;
+- калории;
+- белки;
+- жиры;
+- углеводы;
+- основу, на которую указаны значения.
 
-Очень важно:
+ОСОБЕННО ВАЖНО:
 
-- Не придумывай значения, которых нет на изображении.
-- Если какое-либо значение невозможно прочитать, поставь null.
-- Если на этикетке указаны и значения на 100 г, и на порцию, используй значения на 100 г.
-- Если продукт жидкий, используй 100 мл.
-- Калории должны быть числом.
-- Белки, жиры и углеводы должны быть числами.
-- Не учитывай сахар отдельно от углеводов.
-- Не путай жиры и насыщенные жиры.
-- Не путай углеводы и сахара.
-- Если на этикетке указана энергетическая ценность одновременно в kJ и kcal, используй kcal.
+1. Не придумывай значения.
+2. Если значение невозможно прочитать, используй null.
+3. Если есть значения одновременно на 100 г и на порцию,
+   используй значения на 100 г.
+4. Для напитков используй значения на 100 мл.
+5. Не используй сахара вместо углеводов.
+6. Не используй насыщенные жиры вместо общих жиров.
+7. Если указаны kJ и kcal, используй kcal.
+8. Сохраняй десятичные значения.
+9. Внимательно различай цифры на фотографии.
 
-Верни ТОЛЬКО JSON без markdown и без пояснений.
+Верни ТОЛЬКО JSON.
 
 Формат:
 
@@ -64,23 +60,22 @@ PROMPT = """
   "basis": "100g"
 }
 
-Поле basis может быть только:
+basis может иметь только одно из значений:
 
 "100g"
 "100ml"
 "portion"
 "package"
 
-Если определить основу невозможно, используй null.
+Если основу определить невозможно, верни null.
+
+Если название продукта невозможно прочитать, используй:
+
+"Неизвестный продукт"
 """
 
 
 def extract_json(text: str):
-    """
-    Иногда модель может добавить лишний текст вокруг JSON.
-    Эта функция пытается найти JSON внутри ответа.
-    """
-
     text = text.strip()
 
     try:
@@ -88,18 +83,27 @@ def extract_json(text: str):
     except json.JSONDecodeError:
         pass
 
-    match = re.search(r"\{.*\}", text, re.DOTALL)
+    match = re.search(
+        r"\{.*\}",
+        text,
+        re.DOTALL
+    )
 
     if not match:
-        raise ValueError("Gemini did not return valid JSON")
+        raise ValueError(
+            "Gemini did not return valid JSON"
+        )
 
     return json.loads(match.group(0))
 
 
-async def analyze_food_image(image_bytes: bytes):
+async def analyze_food_image(
+    image_bytes: bytes,
+    mime_type: str = "image/jpeg"
+):
     """
     Отправляет фотографию этикетки в Gemini
-    и возвращает распознанные КБЖУ.
+    и получает структурированные данные КБЖУ.
     """
 
     response = await client.aio.models.generate_content(
@@ -107,7 +111,7 @@ async def analyze_food_image(image_bytes: bytes):
         contents=[
             types.Part.from_bytes(
                 data=image_bytes,
-                mime_type="image/jpeg"
+                mime_type=mime_type
             ),
             PROMPT
         ],
@@ -118,7 +122,9 @@ async def analyze_food_image(image_bytes: bytes):
     )
 
     if not response.text:
-        raise ValueError("Gemini returned an empty response")
+        raise ValueError(
+            "Gemini returned an empty response"
+        )
 
     data = extract_json(response.text)
 
@@ -134,7 +140,7 @@ async def analyze_food_image(image_bytes: bytes):
     for field in required_fields:
         if field not in data:
             raise ValueError(
-                f"Gemini response is missing field: {field}"
+                f"Gemini response is missing: {field}"
             )
 
     return data
