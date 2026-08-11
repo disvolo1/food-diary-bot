@@ -12,7 +12,10 @@ if not GEMINI_API_KEY:
     raise RuntimeError("GEMINI_API_KEY is not set")
 
 
-client = genai.Client(api_key=GEMINI_API_KEY)
+client = genai.Client(
+    api_key=GEMINI_API_KEY
+)
+
 
 MODEL_NAME = "gemini-2.5-flash-lite"
 
@@ -76,10 +79,12 @@ basis может иметь только одно из значений:
 
 
 def extract_json(text: str):
+
     text = text.strip()
 
     try:
         return json.loads(text)
+
     except json.JSONDecodeError:
         pass
 
@@ -94,7 +99,9 @@ def extract_json(text: str):
             "Gemini did not return valid JSON"
         )
 
-    return json.loads(match.group(0))
+    return json.loads(
+        match.group(0)
+    )
 
 
 async def analyze_food_image(
@@ -126,7 +133,9 @@ async def analyze_food_image(
             "Gemini returned an empty response"
         )
 
-    data = extract_json(response.text)
+    data = extract_json(
+        response.text
+    )
 
     required_fields = [
         "name",
@@ -138,6 +147,7 @@ async def analyze_food_image(
     ]
 
     for field in required_fields:
+
         if field not in data:
             raise ValueError(
                 f"Gemini response is missing: {field}"
