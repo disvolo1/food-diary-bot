@@ -90,16 +90,6 @@ class SettingsStates(StatesGroup):
 # TEMPORARY DATA
 # ============================================================
 
-# Здесь временно храним продукт между распознаванием
-# и подтверждением.
-#
-# Для MVP этого достаточно.
-#
-# telegram_id -> {
-#     "data": {...},
-#     "calculated": {...}
-# }
-
 pending_meals = {}
 
 
@@ -108,13 +98,6 @@ pending_meals = {}
 # ============================================================
 
 def format_number(value):
-    """
-    Красиво форматирует числа.
-
-    100.0 -> 100
-    100.5 -> 100.5
-    """
-
     if value is None:
         return "—"
 
@@ -126,15 +109,7 @@ def format_number(value):
     return f"{value:.1f}"
 
 
-def progress_bar(
-    current,
-    goal,
-    length=10
-):
-    """
-    Простая текстовая полоска прогресса.
-    """
-
+def progress_bar(current, goal, length=10):
     if not goal or goal <= 0:
         return "░" * length
 
@@ -153,13 +128,7 @@ def progress_bar(
     )
 
 
-def build_today_text(
-    user,
-    totals
-):
-    """
-    Формирует экран статистики за сегодня.
-    """
+def build_today_text(user, totals):
 
     calories_goal = user["calories_goal"] or 0
     protein_goal = user["protein_goal"] or 0
@@ -221,12 +190,7 @@ def build_today_text(
     )
 
 
-async def show_main_menu(
-    message: Message
-):
-    """
-    Показывает главное меню.
-    """
+async def show_main_menu(message: Message):
 
     await message.answer(
         "🍽 <b>Дневник питания</b>\n\n"
@@ -234,28 +198,6 @@ async def show_main_menu(
         "и я распознаю КБЖУ.",
         reply_markup=main_menu()
     )
-
-
-async def edit_or_answer(
-    message: Message,
-    text: str,
-    reply_markup=None
-):
-    """
-    Пытаемся редактировать существующее сообщение.
-    Если это невозможно — отправляем новое.
-    """
-
-    try:
-        await message.edit_text(
-            text,
-            reply_markup=reply_markup
-        )
-    except Exception:
-        await message.answer(
-            text,
-            reply_markup=reply_markup
-        )
 
 
 # ============================================================
@@ -274,7 +216,6 @@ async def start_handler(
         telegram_id
     )
 
-    # Новый пользователь
     if not user:
 
         await create_user(
@@ -295,8 +236,6 @@ async def start_handler(
 
         return
 
-    # Если пользователь существует,
-    # но настройки ещё не заполнены.
     if not user["calories_goal"]:
 
         await state.set_state(
@@ -319,7 +258,7 @@ async def start_handler(
 
 
 # ============================================================
-# INITIAL SETUP — CALORIES
+# INITIAL SETUP
 # ============================================================
 
 @dp.message(SetupStates.calories)
@@ -363,10 +302,6 @@ async def setup_calories(
     )
 
 
-# ============================================================
-# INITIAL SETUP — PROTEIN
-# ============================================================
-
 @dp.message(SetupStates.protein)
 async def setup_protein(
     message: Message,
@@ -408,10 +343,6 @@ async def setup_protein(
     )
 
 
-# ============================================================
-# INITIAL SETUP — FAT
-# ============================================================
-
 @dp.message(SetupStates.fat)
 async def setup_fat(
     message: Message,
@@ -452,10 +383,6 @@ async def setup_fat(
         "<i>Например: 250 г</i>"
     )
 
-
-# ============================================================
-# INITIAL SETUP — CARBS
-# ============================================================
 
 @dp.message(SetupStates.carbs)
 async def setup_carbs(
@@ -511,7 +438,7 @@ async def setup_carbs(
 
 
 # ============================================================
-# ADD FOOD BUTTON
+# ADD FOOD
 # ============================================================
 
 @dp.callback_query(
@@ -571,6 +498,11 @@ async def receive_food_photo(
             mime_type="image/jpeg"
         )
 
+        logging.info(
+            "Gemini result: %s",
+            result
+        )
+
     except Exception as error:
 
         logging.exception(
@@ -579,12 +511,14 @@ async def receive_food_photo(
         )
 
         try:
+
             await processing_message.edit_text(
                 "❌ <b>Не получилось прочитать этикетку.</b>\n\n"
                 "Попробуй сфотографировать таблицу КБЖУ "
-                "ближе и при хорошем освещении.",
+                "ближе, целиком и при хорошем освещении.",
                 reply_markup=main_menu()
             )
+
         except Exception:
             pass
 
@@ -599,7 +533,6 @@ async def receive_food_photo(
 
     telegram_id = message.from_user.id
 
-    # Проверяем полученные значения
     name = result.get(
         "name"
     ) or "Неизвестный продукт"
@@ -624,6 +557,8 @@ async def receive_food_photo(
         "basis"
     )
 
+    # Если Gemini не смог прочитать
+    # хотя бы одно основное значение
     if any(
         value is None
         for value in [
@@ -635,9 +570,13 @@ async def receive_food_photo(
     ):
 
         await message.answer(
-            "⚠️ <b>Не удалось полностью прочитать КБЖУ.</b>\n\n"
-            "Сфотографируй таблицу пищевой ценности "
-            "крупнее и целиком.",
+            "⚠️ <b>Я увидел этикетку, "
+            "но не смог уверенно прочитать все КБЖУ.</b>\n\n"
+            "Попробуй:\n"
+            "• сфотографировать таблицу ближе\n"
+            "• убрать блики\n"
+            "• сделать фото прямо перед упаковкой\n"
+            "• чтобы вся таблица была в кадре",
             reply_markup=main_menu()
         )
 
@@ -645,7 +584,6 @@ async def receive_food_photo(
 
         return
 
-    # Сохраняем распознанные данные
     pending_meals[telegram_id] = {
         "data": {
             "name": name,
@@ -657,9 +595,9 @@ async def receive_food_photo(
         }
     }
 
-    # --------------------------------------------------------
-    # Формируем экран распознанного продукта
-    # --------------------------------------------------------
+    # ========================================================
+    # Показываем распознанные данные
+    # ========================================================
 
     text = (
         f"📦 <b>{name}</b>\n\n"
@@ -716,7 +654,7 @@ async def receive_food_photo(
 
 
 # ============================================================
-# AMOUNT — GRAMS
+# AMOUNT BUTTONS
 # ============================================================
 
 @dp.callback_query(
@@ -736,15 +674,11 @@ async def amount_grams(
 
     await callback.message.edit_text(
         "⚖️ <b>Сколько грамм?</b>\n\n"
-        "Напиши число.\n"
+        "Напиши число.\n\n"
         "Например: <b>250</b>",
         reply_markup=cancel_keyboard()
     )
 
-
-# ============================================================
-# AMOUNT — PORTION
-# ============================================================
 
 @dp.callback_query(
     MealStates.waiting_amount,
@@ -763,7 +697,7 @@ async def amount_portion(
 
     await callback.message.edit_text(
         "🥣 <b>Сколько порций?</b>\n\n"
-        "Напиши число.\n"
+        "Напиши число.\n\n"
         "Например: <b>2</b>",
         reply_markup=cancel_keyboard()
     )
@@ -828,35 +762,80 @@ async def receive_amount(
     state_data = await state.get_data()
 
     amount_type = state_data.get(
-        "amount_type",
-        "grams"
+        "amount_type"
     )
 
     basis = meal.get(
         "basis"
     )
 
-    # --------------------------------------------------------
+    # ========================================================
     # Расчёт
-    # --------------------------------------------------------
+    # ========================================================
 
-    if basis in (
-        "100g",
-        "100ml"
-    ):
+    if basis == "100g":
+
+        if amount_type != "grams":
+
+            await message.answer(
+                "⚖️ Для этого продукта нужно "
+                "ввести количество в граммах.\n\n"
+                "Например: <b>250</b>"
+            )
+
+            return
 
         multiplier = amount / 100
+        unit = "г"
+
+    elif basis == "100ml":
+
+        if amount_type != "grams":
+
+            await message.answer(
+                "🥤 Для этого продукта нужно "
+                "ввести количество в миллилитрах.\n\n"
+                "Например: <b>330</b>"
+            )
+
+            return
+
+        multiplier = amount / 100
+        unit = "мл"
 
     elif basis in (
         "portion",
         "package"
     ):
 
+        if amount_type != "portion":
+
+            await message.answer(
+                "🥣 Для этого продукта нужно "
+                "указать количество порций.",
+                reply_markup=cancel_keyboard()
+            )
+
+            return
+
         multiplier = amount
+        unit = "порций"
 
     else:
 
+        # Если Gemini не определил основу,
+        # считаем введённое количество граммами.
+        if amount_type != "grams":
+
+            await message.answer(
+                "⚖️ Введи количество в граммах.\n\n"
+                "Например: <b>250</b>"
+            )
+
+            return
+
         multiplier = amount / 100
+        unit = "г"
 
     calculated_calories = (
         meal["calories"]
@@ -894,14 +873,10 @@ async def receive_amount(
 
         "amount": amount,
 
-        "amount_type": amount_type
-    }
+        "amount_type": amount_type,
 
-    unit = (
-        "г"
-        if amount_type == "grams"
-        else "порций"
-    )
+        "unit": unit
+    }
 
     text = (
         "🍽 <b>Проверь приём пищи</b>\n\n"
@@ -922,7 +897,7 @@ async def receive_amount(
 
 
 # ============================================================
-# CONFIRM MEAL
+# CONFIRM
 # ============================================================
 
 @dp.callback_query(
@@ -962,22 +937,14 @@ async def meal_confirm(
         return
 
     await add_meal(
-
         telegram_id=telegram_id,
-
         name=meal["name"],
-
         calories=meal["calories"],
-
         protein=meal["protein"],
-
         fat=meal["fat"],
-
         carbs=meal["carbs"],
-
         amount=meal["amount"],
-
-        amount_unit=meal["amount_type"]
+        amount_unit=meal["unit"]
     )
 
     pending_meals.pop(
@@ -1023,7 +990,12 @@ async def meal_confirm(
         "✅ <b>Добавлено</b>\n\n"
 
         f"📦 {meal['name']}\n"
-        f"🔥 {format_number(meal['calories'])} ккал\n\n"
+        f"🔥 {format_number(meal['calories'])} ккал\n"
+        f"🥩 {format_number(meal['protein'])} г белка\n"
+        f"🥑 {format_number(meal['fat'])} г жиров\n"
+        f"🍞 {format_number(meal['carbs'])} г углеводов\n\n"
+
+        "──────────────\n\n"
 
         "<b>Осталось сегодня:</b>\n\n"
 
@@ -1134,7 +1106,7 @@ async def today_callback(
 
 
 # ============================================================
-# DELETE LAST MEAL
+# DELETE LAST
 # ============================================================
 
 @dp.callback_query(
@@ -1231,7 +1203,7 @@ async def settings_callback(
 
 
 # ============================================================
-# START SETTING
+# SETTINGS HELPERS
 # ============================================================
 
 async def start_setting(
@@ -1323,7 +1295,7 @@ async def set_carbs_callback(
 
 
 # ============================================================
-# UPDATE SINGLE GOAL
+# UPDATE SETTINGS
 # ============================================================
 
 async def update_single_goal(
@@ -1531,19 +1503,10 @@ async def photo_without_state(
     state: FSMContext
 ):
 
-    """
-    Если пользователь просто отправил фотографию
-    этикетки без нажатия кнопки — тоже начинаем
-    распознавание.
-
-    Это делает взаимодействие более естественным.
-    """
-
     await state.set_state(
         MealStates.waiting_photo
     )
 
-    # Передаём обработку в основной обработчик.
     await receive_food_photo(
         message,
         state
@@ -1560,14 +1523,14 @@ async def unknown_text(
 ):
 
     await message.answer(
-        "📷 Отправь фотографию этикетки,\n"
+        "📷 Отправь фотографию этикетки\n"
         "или используй меню ниже.",
         reply_markup=main_menu()
     )
 
 
 # ============================================================
-# START BOT
+# START
 # ============================================================
 
 async def main():
